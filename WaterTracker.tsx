@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
 
 const WaterTracker: React.FC = () => {
+  const { user } = useAuth();
   const [waterGlasses, setWaterGlasses] = useState(() => {
     const saved = localStorage.getItem('waterGlasses');
     const savedDate = localStorage.getItem('waterDate');
@@ -30,6 +33,20 @@ const WaterTracker: React.FC = () => {
         const currentStreak = parseInt(localStorage.getItem('waterStreak') || '0', 10);
         localStorage.setItem('waterStreak', (currentStreak + 1).toString());
         localStorage.setItem('waterStreakDate', today);
+        
+        // GAMIFICATION: 10 pontos por hidratação concluída (8 copos)
+        if (user && user.id) {
+          const isoDate = new Date().toISOString().split('T')[0];
+          const waterBonusDate = localStorage.getItem('waterBonusDate');
+          if (waterBonusDate !== isoDate) {
+              localStorage.setItem('waterBonusDate', isoDate);
+              supabase.from('challenge_logs').insert([{
+                user_id: user.id,
+                log_date: isoDate,
+                score: 10
+              }]).then();
+          }
+        }
       }
     }
   }, [waterGlasses]);

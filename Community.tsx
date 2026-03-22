@@ -9,11 +9,49 @@ const Community: React.FC = () => {
 
   const [posts, setPosts] = useState<any[]>([]);
   const [questions, setQuestions] = useState<any[]>([]);
+  const [commentsData, setCommentsData] = useState<Record<string, any[]>>({});
+  const [expandedComments, setExpandedComments] = useState<string | null>(null);
+  const [newComment, setNewComment] = useState('');
   const [newPhoto, setNewPhoto] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const [newPost, setNewPost] = useState('');
+
+  const [likedPosts, setLikedPosts] = useState<string[]>(() => {
+    const saved = localStorage.getItem('likedCommunityPosts');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const handleLike = async (postId: string, currentLikes: number) => {
+    if (likedPosts.includes(postId)) return;
+    
+    // Atualização Otimista
+    if (activeTab === 'mural') {
+      setPosts(posts.map(p => p.id === postId ? { ...p, likes: currentLikes + 1 } : p));
+    } else {
+      setQuestions(questions.map(q => q.id === postId ? { ...q, likes: currentLikes + 1, upvotes: currentLikes + 1 } : q));
+    }
+    
+    const newLikedStats = [...likedPosts, postId];
+    setLikedPosts(newLikedStats);
+    localStorage.setItem('likedCommunityPosts', JSON.stringify(newLikedStats));
+
+    try {
+      await supabase.from('community_posts').update({ likes: currentLikes + 1 }).eq('id', postId);
+      
+      // GAMIFICATION: 7 pontos por curtir (Apenas se logado)
+      if (user && user.id) {
+        await supabase.from('challenge_logs').insert([{
+           user_id: user.id,
+           log_date: new Date().toISOString().split('T')[0],
+           score: 7
+        }]);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const fetchItems = async () => {
     try {
@@ -50,6 +88,62 @@ const Community: React.FC = () => {
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const fetchComments = async (postId: string) => {
+    try {
+      const { data, error } = await supabase.from('community_comments').select('*').eq('post_id', postId).order('created_at', { ascending: true });
+      if (data) setCommentsData(prev => ({ ...prev, [postId]: data }));
+    } catch (e) {
+      console.warn("Tabela community_comments não existe.");
+    }
+  };
+
+  const toggleComments = (postId: string) => {
+    if (expandedComments === postId) {
+      setExpandedComments(null);
+    } else {
+      setExpandedComments(postId);
+      fetchComments(postId);
+    }
+  };
+
+  const handleAddComment = async (postId: string) => {
+    if (!newComment.trim() || !user) return;
+    const commentObj = {
+      post_id: postId,
+      author_id: user.id,
+      author_name: user.name || 'Aluno',
+      content: newComment,
+    };
+    
+    // Otmista
+    const tempComment = { ...commentObj, id: Date.now().toString(), created_at: new Date().toISOString() };
+    setCommentsData(prev => ({ ...prev, [postId]: [...(prev[postId] || []), tempComment] }));
+    
+    // Atualiza contagem
+    const currentList = activeTab === 'mural' ? posts : questions;
+    const postObj = currentList.find(p => p.id === postId);
+    if (postObj) {
+        if (activeTab === 'mural') {
+            setPosts(posts.map(p => p.id === postId ? { ...p, comments: (p.comments || 0) + 1 } : p));
+        } else {
+            setQuestions(questions.map(q => q.id === postId ? { ...q, comments: (q.comments || 0) + 1 } : q));
+        }
+        await supabase.from('community_posts').update({ comments: (postObj.comments || 0) + 1 }).eq('id', postId);
+    }
+
+    setNewComment('');
+    
+    try {
+      await supabase.from('community_comments').insert([commentObj]);
+      
+      // Gamer points: 10 pts for comment
+      if (user.id) {
+          const today = new Date().toISOString().split('T')[0];
+          await supabase.from('challenge_logs').insert([{ user_id: user.id, log_date: today, score: 10 }]);
+      }
+    } catch (e) { console.error(e); }
   };
 
   const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -105,6 +199,25 @@ const Community: React.FC = () => {
 
     try {
       await supabase.from('community_posts').insert([newItem]);
+      
+      // GAMIFICATION: 20 pontos por postar foto/conquista no mural
+      if (activeTab === 'mural') {
+        const today = now.toISOString().split('T')[0];
+        
+        // Verifica limite localmente (3x por dia)
+        const postsToday = parseInt(localStorage.getItem('muralPostsToday') || '0', 10);
+        const lastPostDate = localStorage.getItem('muralPostDate');
+        
+        if (lastPostDate !== today) {
+           localStorage.setItem('muralPostDate', today);
+           localStorage.setItem('muralPostsToday', '1');
+           await supabase.from('challenge_logs').insert([{ user_id: user.id, log_date: today, score: 20 }]);
+        } else if (postsToday < 3) {
+           localStorage.setItem('muralPostsToday', (postsToday + 1).toString());
+           await supabase.from('challenge_logs').insert([{ user_id: user.id, log_date: today, score: 20 }]);
+        }
+      }
+
       fetchItems();
     } catch (e) {
       console.error("Please create community_posts table", e);
@@ -223,13 +336,53 @@ const Community: React.FC = () => {
                   </div>
                 )}
                 <div className="flex gap-6 border-t border-white/5 pt-4">
-                  <button className="flex items-center gap-2 text-brand-text/40 text-xs font-bold hover:text-brand-gold transition-colors">
-                    <span className="text-lg opacity-80">🔥</span> <span className="mt-0.5">{post.likes || 0}</span>
+                  <button 
+                    onClick={() => handleLike(post.id, post.likes || 0)}
+                    className={`flex items-center gap-2 text-xs font-bold transition-colors ${likedPosts.includes(post.id) ? 'text-brand-gold' : 'text-brand-text/40 hover:text-brand-gold'}`}
+                  >
+                    <span className={`text-lg opacity-80 ${likedPosts.includes(post.id) ? 'scale-110' : ''}`}>🔥</span> <span className="mt-0.5">{post.likes || 0}</span>
                   </button>
-                  <button className="flex items-center gap-2 text-brand-text/40 text-xs font-bold hover:text-brand-gold transition-colors">
+                  <button 
+                    onClick={() => toggleComments(post.id)}
+                    className={`flex items-center gap-2 text-xs font-bold transition-colors ${expandedComments === post.id ? 'text-brand-gold' : 'text-brand-text/40 hover:text-brand-gold'}`}
+                  >
                     <span className="text-lg opacity-80">💬</span> <span className="mt-0.5">{post.comments || 0}</span>
                   </button>
                 </div>
+
+                {expandedComments === post.id && (
+                  <div className="mt-4 pt-4 border-t border-white/5 animate-in slide-in-from-top-2">
+                    <div className="space-y-3 mb-4 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+                      {(!commentsData[post.id] || commentsData[post.id].length === 0) ? (
+                        <p className="text-[10px] text-brand-text/30 font-bold uppercase tracking-widest text-center py-2">Seja o primeiro a comentar!</p>
+                      ) : (
+                        commentsData[post.id].map(comment => (
+                          <div key={comment.id} className="bg-brand-dark/50 p-3 rounded-2xl flex gap-3">
+                            <div className="w-6 h-6 rounded-full bg-brand-gold/20 flex items-center justify-center font-black text-brand-gold text-[10px] shrink-0">
+                               {(comment.author_name || '?')[0]}
+                            </div>
+                            <div>
+                               <h5 className="text-[10px] font-bold text-brand-gold-light opacity-90">{comment.author_name}</h5>
+                               <p className="text-xs text-brand-text/80 font-medium leading-relaxed">{comment.content}</p>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={newComment}
+                        onChange={(e) => setNewComment(e.target.value)}
+                        placeholder="Adicione um comentário..."
+                        className="flex-1 bg-brand-dark border border-white/5 rounded-xl px-4 py-2 text-xs text-brand-text placeholder-brand-text/30 focus:outline-none focus:border-brand-gold/50"
+                      />
+                      <button onClick={() => handleAddComment(post.id)} className="bg-brand-gold/10 text-brand-gold px-4 rounded-xl font-bold hover:bg-brand-gold hover:text-brand-dark transition-colors active:scale-95">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 12h14M12 5l7 7-7 7" /></svg>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -260,7 +413,10 @@ const Community: React.FC = () => {
             questions.map((q) => (
               <div key={q.id} className="bg-brand-card p-5 rounded-[24px] border border-white/5 shadow-lg shadow-black/20 flex gap-4 animate-in slide-in-from-bottom-4 group">
                 <div className="flex flex-col items-center gap-2">
-                  <button className="w-10 h-10 bg-brand-dark border border-white/5 rounded-xl flex items-center justify-center hover:bg-brand-gold/10 hover:border-brand-gold/30 hover:text-brand-gold transition-all text-brand-text/40 active:scale-[0.98] shadow-inner">
+                  <button 
+                    onClick={() => handleLike(q.id, q.likes || q.upvotes || 0)}
+                    className={`w-10 h-10 border rounded-xl flex items-center justify-center transition-all active:scale-[0.98] shadow-inner ${likedPosts.includes(q.id) ? 'bg-brand-gold/20 border-brand-gold/50 text-brand-gold' : 'bg-brand-dark border-white/5 hover:bg-brand-gold/10 hover:border-brand-gold/30 hover:text-brand-gold text-brand-text/40'}`}
+                  >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 15l7-7 7 7" /></svg>
                   </button>
                   <span className="font-black text-brand-gold-light text-xs tracking-wider">{q.likes || q.upvotes || 0}</span>

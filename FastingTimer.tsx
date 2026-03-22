@@ -192,6 +192,17 @@ const FastingTimer: React.FC = () => {
         setSessionId(null);
       }
 
+      if (seconds >= targetSeconds) {
+        // GAMIFICATION: 25 pontos por concluir o protocolo de jejum
+        const today = new Date().toISOString().split('T')[0];
+        
+        supabase.from('challenge_logs').insert([{
+           user_id: user.id,
+           log_date: today,
+           score: 25
+        }]).then();
+      }
+
       // Save to history
       const startD = new Date(fastingStart || (Date.now() - (seconds * 1000)));
       const endD = new Date();

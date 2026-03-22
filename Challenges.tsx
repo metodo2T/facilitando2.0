@@ -47,7 +47,7 @@ const Challenges: React.FC = () => {
         // Check if there's a score for today
         const today = new Date().toISOString().split('T')[0];
         const todayLog = logData.find(l => l.log_date === today);
-        if (todayLog) setDailyScore(todayLog.score);
+        if (todayLog) setDailyScore(todayLog.score / 2);
       }
     }
     setLoading(false);
@@ -65,7 +65,7 @@ const Challenges: React.FC = () => {
         challenge_id: activeChallenge.id,
         user_id: user.id,
         log_date: today,
-        score: score
+        score: score * 2
       }, { onConflict: 'user_id, challenge_id, log_date' });
 
     if (!error) {
@@ -89,7 +89,7 @@ const Challenges: React.FC = () => {
   );
 
   const totalScore = logs.reduce((sum, log) => sum + log.score, 0);
-  const possibleScore = 70; // 7 days * 10 pts
+  const possibleScore = 140; // 7 days * 20 pts
   const weeklyProgress = Math.round((totalScore / possibleScore) * 100);
 
   return (
